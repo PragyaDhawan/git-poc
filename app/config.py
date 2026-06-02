@@ -5,7 +5,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     # Required: GitHub personal access token (needs repo + write:discussion scopes)
-    GITHUB_TOKEN: str = ""
+    # GITHUB_TOKEN: str = ""
+
+    # GitHub App credentials
+    GITHUB_APP_ID: str
+    GITHUB_INSTALLATION_ID: str
+    GITHUB_PRIVATE_KEY_PATH: str
 
     # Recommended: secret token set in GitHub webhook settings
     WEBHOOK_SECRET: str = ""

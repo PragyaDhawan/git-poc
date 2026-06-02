@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.github_client = GitHubClient(token=settings.GITHUB_TOKEN)
+    app.state.github_client = GitHubClient(
+        app_id=settings.GITHUB_APP_ID,
+        installation_id=settings.GITHUB_INSTALLATION_ID,
+        private_key_path=settings.GITHUB_PRIVATE_KEY_PATH,
+    )
     logger.info("GitHub client initialised")
     yield
     await app.state.github_client.close()
@@ -118,6 +122,6 @@ async def webhook(
     except ValidationError as exc:
         logger.warning("Payload validation failed for event '%s': %s", event, exc)
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={"message": "Unexpected payload shape", "errors": exc.errors()},
         )
