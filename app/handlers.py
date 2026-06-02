@@ -35,6 +35,7 @@ async def handle_pull_request(payload: PRPayload, client: GitHubClient) -> JSONR
     action = payload.action
     pr = payload.pull_request
     repo = payload.repository.full_name
+    installation_id = payload.installation.id
 
     logger.info("PR #%s '%s' by @%s — action: %s", pr.number, pr.title, pr.user.login, action)
 
@@ -47,11 +48,12 @@ async def handle_pull_request(payload: PRPayload, client: GitHubClient) -> JSONR
                     "A reviewer will take a look shortly. "
                     "Please make sure all checks pass before requesting a review. ✅"
                 )
-                await client.post_pr_comment(repo, pr.number, comment)
-                await client.add_labels(repo, pr.number, ["needs-review"])
+                await client.post_pr_comment(repo, pr.number, comment, installation_id)
+                await client.add_labels(repo, pr.number, ["needs-review"], installation_id)
                 await client.set_commit_status(
                     repo, pr.head.sha,
                     state="pending",
+                    installation_id=installation_id,
                     description="Awaiting review",
                     context="webhook-bot/review",
                 )
@@ -62,10 +64,11 @@ async def handle_pull_request(payload: PRPayload, client: GitHubClient) -> JSONR
                     f"🔄 @{pr.user.login} pushed new commits to this PR. "
                     "Re-running checks…"
                 )
-                await client.post_pr_comment(repo, pr.number, comment)
+                await client.post_pr_comment(repo, pr.number, comment, installation_id)
                 await client.set_commit_status(
                     repo, pr.head.sha,
                     state="pending",
+                    installation_id=installation_id,
                     description="Checking new commits",
                     context="webhook-bot/review",
                 )
@@ -78,7 +81,7 @@ async def handle_pull_request(payload: PRPayload, client: GitHubClient) -> JSONR
                     if pr.merged else
                     f"🚪 PR closed without merging. @{pr.user.login}, feel free to reopen if needed."
                 )
-                await client.post_pr_comment(repo, pr.number, comment)
+                await client.post_pr_comment(repo, pr.number, comment, installation_id)
                 return JSONResponse(content={"message": "Handled PR closure"})
 
             case "review_requested":

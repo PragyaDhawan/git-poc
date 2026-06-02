@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     app.state.github_client = GitHubClient(
         app_id=settings.GITHUB_APP_ID,
-        installation_id=settings.GITHUB_INSTALLATION_ID,
         private_key_path=settings.GITHUB_PRIVATE_KEY_PATH,
     )
     logger.info("GitHub client initialised")

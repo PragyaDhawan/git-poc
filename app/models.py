@@ -16,6 +16,9 @@ class HeadRef(BaseModel):
 class Repository(BaseModel):
     full_name: str
 
+class Installation(BaseModel):
+    id: int
+
 
 # ------------------------------------------------------------------ #
 #  Pull request                                                        #
@@ -33,6 +36,7 @@ class PRPayload(BaseModel):
     action: str
     pull_request: PullRequest
     repository: Repository
+    installation: Installation
     requested_reviewer: GitHubUser | None = None
 
 
@@ -48,6 +52,7 @@ class PushPayload(BaseModel):
     ref: str
     repository: Repository
     pusher: Pusher
+    installation: Installation | None = None
     commits: list[dict] = []
 
 

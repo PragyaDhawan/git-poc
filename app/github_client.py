@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -31,24 +32,22 @@ class GitHubClient:
       1. Create JWT using App ID + private key
       2. Exchange JWT for installation access token
       3. Use installation token for API calls
+
+    Supports multiple installations by caching tokens per installation_id.
     """
 
     def __init__(
         self,
         app_id: str,
-        installation_id: str,
         private_key_path: str,
         timeout: float = 10.0,
     ):
         if not app_id:
             raise ValueError("GITHUB_APP_ID is required.")
-        if not installation_id:
-            raise ValueError("GITHUB_INSTALLATION_ID is required.")
         if not private_key_path:
             raise ValueError("GITHUB_PRIVATE_KEY_PATH is required.")
 
         self.app_id = str(app_id)
-        self.installation_id = str(installation_id)
         self.private_key_path = Path(private_key_path)
 
         if not self.private_key_path.exists():
@@ -65,8 +64,9 @@ class GitHubClient:
             timeout=timeout,
         )
 
-        self._installation_token: str | None = None
-        self._installation_token_expires_at: float = 0.0
+        # Cache installation tokens per installation_id:
+        # { installation_id: (token, expires_at_unix_timestamp) }
+        self._installation_tokens: dict[int, tuple[str, float]] = {}
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -101,11 +101,22 @@ class GitHubClient:
         token = jwt.encode(payload, private_key, algorithm="RS256")
         return token if isinstance(token, str) else token.decode("utf-8")
 
-    async def _exchange_installation_token(self) -> str:
+    @staticmethod
+    def _parse_expiry(expires_at: str) -> float:
+        """
+        GitHub returns ISO-8601, usually like:
+          2026-06-02T12:34:56Z
+        Convert to a UNIX timestamp with a small safety margin.
+        """
+        normalized = expires_at.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.astimezone(timezone.utc).timestamp() - 60
+
+    async def _exchange_installation_token(self, installation_id: int) -> str:
         jwt_token = self._create_jwt()
 
         resp = await self._http.post(
-            f"/app/installations/{self.installation_id}/access_tokens",
+            f"/app/installations/{installation_id}/access_tokens",
             headers={
                 "Authorization": f"Bearer {jwt_token}",
             },
@@ -127,40 +138,38 @@ class GitHubClient:
         expires_at = data.get("expires_at")
 
         if expires_at:
-            # Keep a safety margin so we refresh before expiry.
-            self._installation_token_expires_at = (
-                time.mktime(time.strptime(expires_at[:19], "%Y-%m-%dT%H:%M:%S")) - 60
-            )
+            expiry_ts = self._parse_expiry(expires_at)
         else:
-            self._installation_token_expires_at = time.time() + 50 * 60
+            # Fallback: GitHub installation tokens usually last about 1 hour
+            expiry_ts = time.time() + 50 * 60
 
-        self._installation_token = token
-        logger.info("Fetched installation token for installation %s", self.installation_id)
+        self._installation_tokens[installation_id] = (token, expiry_ts)
+        logger.info("Fetched installation token for installation %s", installation_id)
         return token
 
-    async def _get_installation_token(self) -> str:
-        if (
-            self._installation_token
-            and time.time() < self._installation_token_expires_at
-        ):
-            return self._installation_token
+    async def _get_installation_token(self, installation_id: int) -> str:
+        cached = self._installation_tokens.get(installation_id)
+        if cached:
+            token, expires_at = cached
+            if time.time() < expires_at:
+                return token
 
-        return await self._exchange_installation_token()
+        return await self._exchange_installation_token(installation_id)
 
-    async def _auth_headers(self) -> dict[str, str]:
-        token = await self._get_installation_token()
+    async def _auth_headers(self, installation_id: int) -> dict[str, str]:
+        token = await self._get_installation_token(installation_id)
         return {"Authorization": f"Bearer {token}"}
 
     # ------------------------------------------------------------------ #
     #  Internal GitHub API helper                                        #
     # ------------------------------------------------------------------ #
 
-    async def _post(self, path: str, body: dict) -> dict:
+    async def _post(self, path: str, body: dict, installation_id: int) -> dict:
         try:
             resp = await self._http.post(
                 path,
                 json=body,
-                headers=await self._auth_headers(),
+                headers=await self._auth_headers(installation_id),
             )
             resp.raise_for_status()
             return resp.json() if resp.content else {}
@@ -183,10 +192,17 @@ class GitHubClient:
     #  Comments                                                          #
     # ------------------------------------------------------------------ #
 
-    async def post_pr_comment(self, repo: str, pr_number: int, body: str) -> dict:
+    async def post_pr_comment(
+        self,
+        repo: str,
+        pr_number: int,
+        body: str,
+        installation_id: int,
+    ) -> dict:
         result = await self._post(
             f"/repos/{repo}/issues/{pr_number}/comments",
             {"body": body},
+            installation_id,
         )
         logger.info("Posted comment on PR #%s in %s", pr_number, repo)
         return result
@@ -195,10 +211,17 @@ class GitHubClient:
     #  Labels                                                            #
     # ------------------------------------------------------------------ #
 
-    async def add_labels(self, repo: str, pr_number: int, labels: list[str]) -> dict:
+    async def add_labels(
+        self,
+        repo: str,
+        pr_number: int,
+        labels: list[str],
+        installation_id: int,
+    ) -> dict:
         return await self._post(
             f"/repos/{repo}/issues/{pr_number}/labels",
             {"labels": labels},
+            installation_id,
         )
 
     # ------------------------------------------------------------------ #
@@ -206,11 +229,16 @@ class GitHubClient:
     # ------------------------------------------------------------------ #
 
     async def request_reviewers(
-        self, repo: str, pr_number: int, reviewers: list[str]
+        self,
+        repo: str,
+        pr_number: int,
+        reviewers: list[str],
+        installation_id: int,
     ) -> dict:
         return await self._post(
             f"/repos/{repo}/pulls/{pr_number}/requested_reviewers",
             {"reviewers": reviewers},
+            installation_id,
         )
 
     # ------------------------------------------------------------------ #
@@ -222,6 +250,7 @@ class GitHubClient:
         repo: str,
         sha: str,
         state: CommitState,
+        installation_id: int,
         description: str = "",
         context: str = "webhook-bot",
         target_url: str = "",
@@ -229,4 +258,9 @@ class GitHubClient:
         body: dict = {"state": state, "description": description, "context": context}
         if target_url:
             body["target_url"] = target_url
-        return await self._post(f"/repos/{repo}/statuses/{sha}", body)
+
+        return await self._post(
+            f"/repos/{repo}/statuses/{sha}",
+            body,
+            installation_id,
+        )

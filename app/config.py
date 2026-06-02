@@ -9,7 +9,6 @@ class Settings(BaseSettings):
 
     # GitHub App credentials
     GITHUB_APP_ID: str
-    GITHUB_INSTALLATION_ID: str
     GITHUB_PRIVATE_KEY_PATH: str
 
     # Recommended: secret token set in GitHub webhook settings
